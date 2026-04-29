@@ -1,4 +1,4 @@
-const admin = require('firebase-admin');
+// const admin = require('firebase-admin');
 
 // if (!admin.apps.length) {
 //     admin.initializeApp({
@@ -7,6 +7,8 @@ const admin = require('firebase-admin');
 // }
 
 // module.exports = admin;const admin = require('firebase-admin');
+
+const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
     try {
