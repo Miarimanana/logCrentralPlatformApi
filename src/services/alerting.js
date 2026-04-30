@@ -1,218 +1,65 @@
-// const axios = require('axios');
-// const admin = require('./firebase');
-
-// const db = admin.firestore();
-// const _seen = new Set();
-
-// function parseSeverity(log) {
-//     if (log.pri) {
-//         const n = parseInt(log.pri);
-//         if (!isNaN(n)) return n & 7;
-//     }
-//     return 6;
-// }
-
-// function dedupeKey(log) {
-//     const slot = Math.floor(Date.parse(log.timestamp) / (5 * 60 * 1000));
-//     return `${log.device_id}|${log.message}|${slot}`;
-// }
-
-// async function pollAndAlert() {
-//     try {
-//         const now = Math.floor(Date.now() / 1000);
-//         console.log('[alert] poll at', now);
-
-//         const resp = await axios.get(`${process.env.LOKI_URL}/loki/api/v1/query_range`, {
-//             params: {
-//                 query: '{job="syslog"}',
-//                 limit: 100,
-//                 start: now - 35,
-//                 end: now,
-//                 direction: 'backward',
-//             },
-//         });
-
-//         const result = (resp.data && resp.data.data && resp.data.data.result) || [];
-//         console.log('[alert] streams:', result.length);
-
-//         for (const stream of result) {
-//             for (const entry of stream.values) {
-//                 const ts  = entry[0];
-//                 const msg = entry[1];
-
-//                 let parsed = {};
-//                 try { parsed = JSON.parse(msg); } catch(e) { parsed = { message: msg }; }
-
-//                 const log = {
-//                     timestamp: new Date(parseInt(ts) / 1e6).toISOString(),
-//                     message:   parsed.message  || msg,
-//                     device_id: stream.stream.device_id || parsed.device_id || 'unknown',
-//                     tenant_id: stream.stream.tenant_id || parsed.tenant_id || 'default',
-//                     ident:     parsed.ident || '',
-//                     pri:       parsed.pri   || '',
-//                 };
-
-//                 const severity = parseSeverity(log);
-//                 console.log('[alert] pri:', log.pri, '-> sev:', severity, '|', log.message);
-
-//                 if (severity > 4) continue;
-
-//                 const key = dedupeKey(log);
-//                 if (_seen.has(key)) { console.log('[alert] skip dedupe'); continue; }
-//                 _seen.add(key);
-//                 setTimeout(function() { _seen.delete(key); }, 10 * 60 * 1000);
-
-//                 await db.collection('alerts').add({
-//                     rule:         'severity <= 4',
-//                     device_id:    log.device_id,
-//                     message:      log.message,
-//                     severity:     severity,
-//                     status:       'active',
-//                     count:        1,
-//                     triggered_at: admin.firestore.Timestamp.fromDate(new Date(log.timestamp)),
-//                     resolved_at:  null,
-//                     tenant_id:    log.tenant_id,
-//                     ident:        log.ident,
-//                 });
-
-//                 console.log('[alert] CREATED sev=' + severity + ' device=' + log.device_id + ' — ' + log.message);
-//             }
-//         }
-//     } catch (err) {
-//         console.error('[alert] poll error:', err.message);
-//     }
-// }
-
-// function startAlerting(intervalMs) {
-//     const ms = intervalMs || 30000;
-//     console.log('[alert] polling every ' + (ms / 1000) + 's');
-//     pollAndAlert();
-//     return setInterval(pollAndAlert, ms);
-// }
-
-// module.exports = { startAlerting };
-
-
-const axios = require('axios');
 const admin = require('./firebase');
 const { PrismaClient } = require('@prisma/client');
-
-const db = admin.firestore();
 const prisma = new PrismaClient();
-const _seen = new Set();
 
-// Cache nom → UUID pour éviter un appel Prisma à chaque log
-const _tenantCache = new Map();
+// Envoi notification FCM au tenant
+async function sendPushToTenant(tenantId, alert) {
+  try {
+    if (!admin.apps.length) return;
 
-async function resolveTenantId(tenantName) {
-    if (!tenantName || tenantName === 'default') return tenantName;
+    // Récupère les tokens FCM des users du tenant
+    const users = await prisma.user.findMany({
+      where: { tenantId },
+      select: { fcmToken: true },
+    });
 
-    // Retourne depuis le cache si déjà résolu
-    if (_tenantCache.has(tenantName)) return _tenantCache.get(tenantName);
+    const tokens = users.map(u => u.fcmToken).filter(Boolean);
+    if (tokens.length === 0) return;
 
-    try {
-        const tenant = await prisma.tenant.findUnique({ where: { name: tenantName } });
-        if (tenant) {
-            _tenantCache.set(tenantName, tenant.id.toString());
-            return tenant.id.toString();
-        }
-    } catch (e) {
-        console.error('[alert] resolveTenantId error:', e.message);
+    const severity = alert.severity;
+    const labels   = ['EMERG','ALERT','CRIT','ERROR','WARN','NOTICE','INFO','DEBUG'];
+    const label    = labels[Math.min(severity, 7)];
+
+    await admin.messaging().sendEachForMulticast({
+      tokens,
+      notification: {
+        title: `[${label}] ${alert.deviceId}`,
+        body:  alert.message || 'Alerte système',
+      },
+      data: {
+        severity:  String(severity),
+        deviceId:  alert.deviceId,
+        tenantId:  alert.tenantId,
+        alertId:   alert.id || '',
+      },
+      android: { priority: severity <= 3 ? 'high' : 'normal' },
+    });
+
+    console.log(`[alert] FCM envoyé → ${tokens.length} device(s) tenant=${tenantId}`);
+  } catch (err) {
+    console.error('[alert] FCM error:', err.message);
+  }
+}
+
+// Appelé depuis le webhook quand is_alert = true
+async function processAlert(alertData) {
+  try {
+    const alert = await prisma.alert.create({ data: alertData });
+    console.log(`[alert] créé id=${alert.id} sev=${alert.severity} device=${alert.deviceId}`);
+
+    // Notifier seulement si critique (sev <= 3)
+    if (alert.severity <= 3) {
+      await sendPushToTenant(alert.tenantId, alert);
     }
 
-    // Fallback : on garde le nom si le tenant n'existe pas en DB
-    return tenantName;
+    return alert;
+  } catch (err) {
+    console.error('[alert] processAlert error:', err.message);
+  }
 }
 
-function parseSeverity(log) {
-    if (log.pri) {
-        const n = parseInt(log.pri);
-        if (!isNaN(n)) return n & 7;
-    }
-    return 6;
+function startAlerting() {
+  console.log('[alert] prêt — alertes via webhook Fluent Bit');
 }
 
-function dedupeKey(log) {
-    const slot = Math.floor(Date.parse(log.timestamp) / (5 * 60 * 1000));
-    return `${log.device_id}|${log.message}|${slot}`;
-}
-
-async function pollAndAlert() {
-    try {
-        const now = Math.floor(Date.now() / 1000);
-        console.log('[alert] poll at', now);
-
-        const resp = await axios.get(`${process.env.LOKI_URL}/loki/api/v1/query_range`, {
-            params: {
-                query: '{job="syslog"}',
-                limit: 100,
-                start: now - 35,
-                end: now,
-                direction: 'backward',
-            },
-        });
-
-        const result = (resp.data && resp.data.data && resp.data.data.result) || [];
-        console.log('[alert] streams:', result.length);
-
-        for (const stream of result) {
-            for (const entry of stream.values) {
-                const ts = entry[0];
-                const msg = entry[1];
-
-                let parsed = {};
-                try { parsed = JSON.parse(msg); } catch (e) { parsed = { message: msg }; }
-
-                // Nom brut venant de Loki (ex: "logcentral")
-                const rawTenantName = stream.stream.tenant_id || parsed.tenant_id || 'default';
-
-                const tenantUuid = await resolveTenantId(rawTenantName);
-
-                const log = {
-                    timestamp: new Date(parseInt(ts) / 1e6).toISOString(),
-                    message: parsed.message || msg,
-                    device_id: stream.stream.device_id || parsed.device_id || 'unknown',
-                    tenant_id: tenantUuid,
-                    ident: parsed.ident || '',
-                    pri: parsed.pri || '',
-                };
-
-                const severity = parseSeverity(log);
-                console.log('[alert] pri:', log.pri, '-> sev:', severity, '|', log.message);
-
-                if (severity > 4) continue;
-
-                const key = dedupeKey(log);
-                if (_seen.has(key)) { console.log('[alert] skip dedupe'); continue; }
-                _seen.add(key);
-                setTimeout(function() { _seen.delete(key); }, 10 * 60 * 1000);
-
-                await db.collection('alerts').add({
-                    rule: 'severity <= 4',
-                    device_id: log.device_id,
-                    message: log.message,
-                    severity: severity,
-                    status: 'active',
-                    count: 1,
-                    triggered_at: admin.firestore.Timestamp.fromDate(new Date(log.timestamp)),
-                    resolved_at: null,
-                    tenant_id: log.tenant_id,
-                    ident: log.ident,
-                });
-
-                console.log('[alert] CREATED sev=' + severity + ' tenant=' + log.tenant_id + ' device=' + log.device_id + ' — ' + log.message);
-            }
-        }
-    } catch (err) {
-        console.error('[alert] poll error:', err.message);
-    }
-}
-
-function startAlerting(intervalMs) {
-    const ms = intervalMs || 30000;
-    console.log('[alert] polling every ' + (ms / 1000) + 's');
-    pollAndAlert();
-    return setInterval(pollAndAlert, ms);
-}
-
-module.exports = { startAlerting };
+module.exports = { startAlerting, processAlert };

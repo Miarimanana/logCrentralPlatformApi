@@ -14,6 +14,7 @@ model User {
   name      String
   tenantId  String
   role      Role     @default(VIEWER)
+  fcmToken  String?
   createdAt DateTime @default(now())
 
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
