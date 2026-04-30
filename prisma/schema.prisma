@@ -48,3 +48,25 @@ enum Role {
   ADMIN
   VIEWER
 }
+
+model Log {
+  id        String   @id @default(uuid())
+  deviceId  String
+  tenantId  String
+  message   String
+  severity  Int      @default(0)
+  raw       Json?
+  createdAt DateTime @default(now())
+}
+
+model Alert {
+  id          String   @id @default(uuid())
+  deviceId    String
+  tenantId    String
+  message     String
+  severity    Int      @default(2)
+  rule        String?
+  status      String   @default("active")
+  triggeredAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+}

@@ -1,43 +1,39 @@
 const router = require('express').Router();
-const { Firestore } = require('@google-cloud/firestore');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
-// Initialize Firestore with the Firebase service account
-const firestore = new Firestore({
-    projectId: 'logcentral-platform',
-    keyFilename: require('path').join(__dirname, '../../../logcentral_app/android/app/google-services.json'),
-});
+router.post('/fluentbit', async (req, res) => {
+  try {
+    const records = Array.isArray(req.body) ? req.body : [req.body];
+    const logs = [];
+    const alerts = [];
 
-// POST /api/webhooks/fluentbit — reçoit les alertes de Fluent Bit
-router.post('/fluentbit', async(req, res) => {
-    try {
-        const record = req.body;
+    for (const record of records) {
+      const base = {
+        deviceId:  record.device_id || record.host || 'unknown',
+        tenantId:  record.tenant_id || 'default',
+        message:   record.message   || record.log  || '',
+        severity:  parseInt(record.detected_severity) || 0,
+        raw:       record,
+      };
 
-        // Vérifier si c'est une alerte critique
-        if (!record.is_alert) {
-            return res.json({ success: true, skipped: true });
-        }
-
-        const alertData = {
-            rule: record.alert_rule || 'syslog_critical',
-            device_id: record.device_id || record.host || 'unknown',
-            message: record.message || 'Alerte système',
-            severity: record.detected_severity || 2,
-            status: 'active',
-            count: 1,
-            tenant_id: record.tenant_id || 'default',
-            triggered_at: Firestore.Timestamp.now(),
-        };
-
-        // Écrire dans Firestore
-        const docRef = await firestore.collection('alerts').add(alertData);
-
-        console.log(`[ALERT] Created: ${docRef.id} - Severity: ${alertData.severity}`);
-
-        res.json({ success: true, alertId: docRef.id });
-    } catch (err) {
-        console.error('FluentBit webhook error:', err.message);
-        res.status(500).json({ error: 'Erreur traitement alerte' });
+      if (record.is_alert) {
+        alerts.push({ ...base, rule: record.alert_rule || null, triggeredAt: new Date() });
+      } else {
+        logs.push(base);
+      }
     }
+
+    if (logs.length   > 0) await prisma.log.createMany({ data: logs });
+    if (alerts.length > 0) await prisma.alert.createMany({ data: alerts });
+
+    console.log(`[WEBHOOK] ${logs.length} logs, ${alerts.length} alertes`);
+    res.json({ success: true, logs: logs.length, alerts: alerts.length });
+
+  } catch (err) {
+    console.error('FluentBit webhook error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
