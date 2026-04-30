@@ -4,25 +4,12 @@ const admin = require('../services/firebase');
 const db = admin.firestore();
 const _seen = new Set();
 
-const SEVERITY_MAP = {
-    emerg: 0,
-    panic: 0,
-    alert: 1,
-    crit: 2,
-    err: 3,
-    error: 3,
-    warn: 4,
-    warning: 4,
-};
-
 function parseSeverity(log) {
-    if (log.pri) {
-        const n = parseInt(log.pri);
+    // PRIORITY vient de journald (ex: "1", "3", "5")
+    const p = log.PRIORITY || log.pri || log.priority;
+    if (p !== undefined && p !== '') {
+        const n = parseInt(p);
         if (!isNaN(n)) return n & 7;
-    }
-    if (log.level) {
-        const s = SEVERITY_MAP[log.level.toLowerCase()];
-        if (s !== undefined) return s;
     }
     return 6;
 }
@@ -35,8 +22,6 @@ function dedupeKey(log) {
 async function pollAndAlert() {
     try {
         const now = Math.floor(Date.now() / 1000);
-        console.log('[alert] poll at', now, 'start:', now - 35);
-
         const resp = await axios.get(`${process.env.LOKI_URL}/loki/api/v1/query_range`, {
             params: {
                 query: '{job="syslog"}',
@@ -57,21 +42,20 @@ async function pollAndAlert() {
 
                 const log = {
                     timestamp: new Date(parseInt(ts) / 1e6).toISOString(),
-                    message: parsed.message || msg,
+                    message: parsed.MESSAGE || parsed.message || msg,
                     device_id: stream.stream.device_id || parsed.device_id || 'unknown',
                     tenant_id: stream.stream.tenant_id || parsed.tenant_id || 'default',
-                    level: stream.stream.level || parsed.level || '',
-                    ident: parsed.ident || '',
+                    PRIORITY: parsed.PRIORITY || '',
                     pri: parsed.pri || '',
                 };
 
                 const severity = parseSeverity(log);
-                console.log('[alert] pri:', log.pri, '-> sev:', severity, '| msg:', log.message);
+                console.log('[alert] PRIORITY:', log.PRIORITY, '-> sev:', severity, '| msg:', log.message.substring(0, 50));
 
                 if (severity > 4) continue;
 
                 const key = dedupeKey(log);
-                if (_seen.has(key)) { console.log('[alert] dedupe skip'); continue; }
+                if (_seen.has(key)) continue;
                 _seen.add(key);
                 setTimeout(() => _seen.delete(key), 10 * 60 * 1000);
 
@@ -85,7 +69,6 @@ async function pollAndAlert() {
                     triggered_at: admin.firestore.Timestamp.fromDate(new Date(log.timestamp)),
                     resolved_at: null,
                     tenant_id: log.tenant_id,
-                    ident: log.ident,
                 });
 
                 console.log('[alert] CREATED sev=' + severity + ' device=' + log.device_id);
