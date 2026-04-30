@@ -1,6 +1,7 @@
 const http = require('http');
 
-const LOKI_URL = process.env.LOKI_URL || 'http://localhost:3100';
+// const LOKI_URL = process.env.LOKI_URL || 'http://localhost:3100';
+const LOKI_URL = process.env.LOKI_URL || 'http://loki.railway.internal:3100';
 
 async function queryLoki(query) {
     return new Promise((resolve) => {
