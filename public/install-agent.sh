@@ -5,17 +5,17 @@ DEVICE_TOKEN="$1"
 SERVER_URL="${2:-https://logcrentralplatformapi-production.up.railway.app}"
 
 if [ -z "$DEVICE_TOKEN" ]; then
-  echo "Usage: curl -s ${SERVER_URL}/install-agent.sh | bash -s DEVICE_TOKEN"
+  echo "Usage: curl -s ${SERVER_URL}/install-agent.sh | sudo bash -s DEVICE_TOKEN"
   exit 1
 fi
 
 echo "Verification du token..."
 DEVICE_INFO=$(curl -s "${SERVER_URL}/api/devices/by-token/${DEVICE_TOKEN}")
-DEVICE_ID=$(echo "$DEVICE_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['deviceId'])" 2>/dev/null)
-TENANT_NAME=$(echo "$DEVICE_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['tenantName'])" 2>/dev/null)
+DEVICE_ID=$(echo "$DEVICE_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('deviceId', ''))" 2>/dev/null)
+TENANT_NAME=$(echo "$DEVICE_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tenantName', ''))" 2>/dev/null)
 
-if [ -z "$DEVICE_ID" ] || [ "$DEVICE_ID" = "None" ]; then
-  echo "Erreur: token invalide ou serveur inaccessible ($SERVER_URL)"
+if [ -z "$DEVICE_ID" ]; then
+  echo "Erreur: token invalide ($SERVER_URL)"
   exit 1
 fi
 
@@ -24,9 +24,14 @@ echo "Tenant  : $TENANT_NAME"
 
 API_HOST=$(echo "$SERVER_URL" | sed 's|https://||' | sed 's|http://||' | cut -d'/' -f1)
 
+# Installation propre pour Kali/Debian
 if ! command -v fluent-bit &>/dev/null; then
   echo "Installation de Fluent-Bit..."
-  curl -fsSL https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh | sh
+  # Fix GPG pour Kali
+  wget -qO - https://packages.fluentbit.io/fluentbit.key | gpg --dearmor | tee /usr/share/keyrings/fluentbit.gpg > /dev/null
+  echo "deb [signed-by=/usr/share/keyrings/fluentbit.gpg] https://packages.fluentbit.io/debian/bookworm bookworm main" > /etc/apt/sources.list.d/fluentbit.list
+  apt-get update -qq
+  apt-get install -y fluent-bit
 fi
 
 mkdir -p /etc/fluent-bit
@@ -52,13 +57,14 @@ cat > /etc/fluent-bit/fluent-bit.conf << FBEOF
     Match        *
     Host         ${API_HOST}
     Port         443
-    URI          /api/ingest/logs
+    URI          /api/webhooks/fluentbit
     Format       json
     TLS          On
     TLS.Verify   Off
     Retry_Limit  3
 FBEOF
 
+# Service Systemd
 cat > /etc/systemd/system/logcentral-agent.service << SEOF
 [Unit]
 Description=LogCentral Agent
