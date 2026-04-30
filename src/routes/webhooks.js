@@ -12,7 +12,7 @@ router.post('/fluentbit', async (req, res) => {
       const base = {
         deviceId:  record.device_id || record.host || 'unknown',
         tenantId:  record.tenant_id || 'default',
-        message:   record.message   || record.log  || '',
+        message:   record.MESSAGE || record.message || record.log  || '',
         severity:  parseInt(record.detected_severity) || 0,
         raw:       record,
       };
