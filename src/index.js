@@ -12,7 +12,7 @@ const logsRoutes = require('./routes/logs');
 const kpiRoutes = require('./routes/kpi');
 const webhookRoutes = require('./routes/webhooks');
 // const { startAlerting } = require('./routes/alerts');
-const { startAlerting } = require('./services/alerts');
+const { startAlerting } = require('./services/alerting');
 
 const app = express();
 app.use(cors());
