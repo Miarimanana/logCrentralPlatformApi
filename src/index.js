@@ -11,7 +11,8 @@ const deviceRoutes = require('./routes/devices');
 const logsRoutes = require('./routes/logs');
 const kpiRoutes = require('./routes/kpi');
 const webhookRoutes = require('./routes/webhooks');
-const { startAlerting } = require('./services/alerting');
+// const { startAlerting } = require('./services/alerting');
+const { startAlerting } = require('./services/alerts');
 
 const app = express();
 app.use(cors());
