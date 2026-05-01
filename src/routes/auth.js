@@ -112,7 +112,6 @@ router.post('/register', async(req, res) => {
     }
 
     try {
-        // Créer ou récupérer le tenant
         let tenant = await prisma.tenant.findUnique({ where: { name: tenantName } });
         if (!tenant) {
             tenant = await prisma.tenant.create({ data: { name: tenantName } });
@@ -133,24 +132,21 @@ router.post('/register', async(req, res) => {
             process.env.JWT_SECRET, { expiresIn: '7d' }
         );
 
-        // Pose les claims permanents sur l'utilisateur Firebase
-        // (crée l'utilisateur Firebase s'il n'existe pas)
         try {
             await admin.auth().setCustomUserClaims(user.id.toString(), {
-                tenant_id: user.tenantId.toString(),
+                tenant_id: tenant.name.toString(),
                 role: user.role,
             });
         } catch (e) {
-            // L'utilisateur Firebase n'existe pas encore, on le crée
             await admin.auth().createUser({ uid: user.id.toString() });
             await admin.auth().setCustomUserClaims(user.id.toString(), {
-                tenant_id: user.tenantId.toString(),
+                tenant_id: tenant.name.toString(),
                 role: user.role,
             });
         }
 
         const firebaseToken = await admin.auth().createCustomToken(
-            user.id.toString(), { tenant_id: tenant.id.toString() }
+            user.id.toString(), { tenant_id: tenant.name.toString() }
         );
 
         res.status(201).json({
@@ -192,24 +188,21 @@ router.post('/login', async(req, res) => {
             process.env.JWT_SECRET, { expiresIn: '7d' }
         );
 
-        // Pose les claims permanents sur l'utilisateur Firebase
-        // (crée l'utilisateur Firebase s'il n'existe pas)
         try {
             await admin.auth().setCustomUserClaims(user.id.toString(), {
-                tenant_id: user.tenantId.toString(),
+                tenant_id: user.tenant.name.toString(),
                 role: user.role,
             });
         } catch (e) {
-            // L'utilisateur Firebase n'existe pas encore, on le crée
             await admin.auth().createUser({ uid: user.id.toString() });
             await admin.auth().setCustomUserClaims(user.id.toString(), {
-                tenant_id: user.tenantId.toString(),
+                tenant_id: user.tenant.name.toString(),
                 role: user.role,
             });
         }
 
         const firebaseToken = await admin.auth().createCustomToken(
-            user.id.toString(), { tenant_id: user.tenantId.toString() }
+            user.id.toString(), { tenant_id: user.tenant.name.toString() }
         );
 
         res.json({
