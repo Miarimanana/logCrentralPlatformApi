@@ -112,10 +112,14 @@ router.post('/register', async(req, res) => {
     }
 
     try {
-        let tenant = await prisma.tenant.findUnique({ where: { name: tenantName } });
-        if (!tenant) {
-            tenant = await prisma.tenant.create({ data: { name: tenantName } });
+        // Bloquer si le tenantName est déjà pris — chaque compte a son propre tenant
+        const existingTenant = await prisma.tenant.findUnique({ where: { name: tenantName } });
+        if (existingTenant) {
+            return res.status(409).json({ error: 'Ce nom d\'organisation est déjà utilisé, choisissez-en un autre' });
         }
+
+        // Toujours créer un nouveau tenant isolé
+        const tenant = await prisma.tenant.create({ data: { name: tenantName } });
 
         const hashed = await bcrypt.hash(password, 10);
         const user = await prisma.user.create({
