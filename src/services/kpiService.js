@@ -105,11 +105,121 @@
 
 // module.exports = { getKpis };
 
+// const { PrismaClient } = require('@prisma/client');
+// const admin = require('./firebase');
+// const prisma = new PrismaClient();
+
+// let queryLoki, queryLokiCount;
+// try {
+//     const lokiService = require('./lokiService');
+//     queryLoki = lokiService.queryLoki;
+//     queryLokiCount = lokiService.queryLokiCount;
+// } catch (e) {
+//     console.warn('[KPI] lokiService introuvable:', e.message);
+//     queryLoki = async() => 0;
+//     queryLokiCount = async() => 0;
+// }
+
+// // Niveaux syslog journald — champ PRIORITY (string, majuscules)
+// // INFO  : PRIORITY = "6"
+// // WARN  : PRIORITY = "4" ou "5"
+// // ERROR : PRIORITY = "0", "1", "2", "3"
+
+// async function getActiveDevicesFromLoki(tenantName) {
+//     try {
+//         return await queryLokiCount(
+//             `count by (device_id) (count_over_time({tenant_id="${tenantName}"}[1h]))`
+//         );
+//     } catch (e) {
+//         console.error('[KPI] Loki activeDevices erreur:', e.message);
+//         return 0;
+//     }
+// }
+
+// async function getKpis(userId, tenantId) {
+//     if (!userId) throw new Error('userId requis');
+//     if (!tenantId) throw new Error('tenantId requis');
+
+//     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+//     const tenantName = tenant ? tenant.name : 'default';
+
+//     console.log('[KPI] userId:', userId, '| tenantId:', tenantId, '| tenantName:', tenantName);
+
+//     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+
+//     const [totalDevices, offlineDevices] = await Promise.all([
+//         prisma.device.count({ where: { tenantId } }),
+//         prisma.device.count({
+//             where: {
+//                 tenantId,
+//                 OR: [
+//                     { online: false },
+//                     { lastSeenAt: { lt: fiveMinAgo } },
+//                     { lastSeenAt: null },
+//                 ],
+//             },
+//         }),
+//     ]);
+
+//     console.log('[KPI] Devices — total:', totalDevices, '| offline:', offlineDevices);
+
+//     let logsInfo = 0,
+//         logsWarn = 0,
+//         logsError = 0,
+//         activeTokens = 0;
+//     try {
+//         console.log('[KPI] Loki queries pour tenantName:', tenantName);
+
+//         // FIX : champ PRIORITY (majuscules, valeur string) au lieu de pri
+//         [logsInfo, logsWarn, logsError, activeTokens] = await Promise.all([
+//             queryLoki(`sum(count_over_time({tenant_id="${tenantName}"} | json | PRIORITY="6"[1h]))`),
+//             queryLoki(`sum(count_over_time({tenant_id="${tenantName}"} | json | PRIORITY=~"4|5"[1h]))`),
+//             queryLoki(`sum(count_over_time({tenant_id="${tenantName}"} | json | PRIORITY=~"0|1|2|3"[1h]))`),
+//             getActiveDevicesFromLoki(tenantName),
+//         ]);
+
+//         console.log('[KPI] Loki résultats:', { logsInfo, logsWarn, logsError, activeTokens });
+//     } catch (e) {
+//         console.error('[KPI] Loki erreur:', e.message);
+//     }
+
+//     let alertsPending = 0;
+//     try {
+//         const snap = await admin.firestore()
+//             .collection('alerts')
+//             .where('tenant_id', '==', tenantName)
+//             .where('status', 'in', ['pending', 'active'])
+//             .count()
+//             .get();
+//         alertsPending = snap.data().count;
+//     } catch (e) {
+//         console.error('[KPI] Firestore erreur:', e.message);
+//     }
+
+//     return {
+//         devices: {
+//             total: totalDevices,
+//             online: totalDevices - offlineDevices,
+//             offline: offlineDevices,
+//         },
+//         logs: {
+//             info_per_hour: Math.round(logsInfo),
+//             warn_per_hour: Math.round(logsWarn),
+//             error_per_hour: Math.round(logsError),
+//         },
+//         tokens: { active: activeTokens },
+//         alerts: { pending: alertsPending },
+//         generated_at: new Date().toISOString(),
+//     };
+// }
+
+// module.exports = { getKpis };
+
 const { PrismaClient } = require('@prisma/client');
 const admin = require('./firebase');
 const prisma = new PrismaClient();
 
-let queryLoki, queryLokiCount;
+let queryLoki, queryLokiCount, queryLokiSum;
 try {
     const lokiService = require('./lokiService');
     queryLoki = lokiService.queryLoki;
@@ -127,9 +237,11 @@ try {
 
 async function getActiveDevicesFromLoki(tenantName) {
     try {
-        return await queryLokiCount(
+        const count = await queryLokiCount(
             `count by (device_id) (count_over_time({tenant_id="${tenantName}"}[1h]))`
         );
+        console.log('[KPI] activeDevices (streams):', count);
+        return count;
     } catch (e) {
         console.error('[KPI] Loki activeDevices erreur:', e.message);
         return 0;
@@ -170,7 +282,6 @@ async function getKpis(userId, tenantId) {
     try {
         console.log('[KPI] Loki queries pour tenantName:', tenantName);
 
-        // FIX : champ PRIORITY (majuscules, valeur string) au lieu de pri
         [logsInfo, logsWarn, logsError, activeTokens] = await Promise.all([
             queryLoki(`sum(count_over_time({tenant_id="${tenantName}"} | json | PRIORITY="6"[1h]))`),
             queryLoki(`sum(count_over_time({tenant_id="${tenantName}"} | json | PRIORITY=~"4|5"[1h]))`),
@@ -181,6 +292,13 @@ async function getKpis(userId, tenantId) {
         console.log('[KPI] Loki résultats:', { logsInfo, logsWarn, logsError, activeTokens });
     } catch (e) {
         console.error('[KPI] Loki erreur:', e.message);
+    }
+
+    // on utilise le count Prisma comme fallback
+    const onlineFromPrisma = totalDevices - offlineDevices;
+    if (activeTokens === 0 && onlineFromPrisma > 0) {
+        console.log('[KPI] activeTokens Loki=0, fallback Prisma online:', onlineFromPrisma);
+        activeTokens = onlineFromPrisma;
     }
 
     let alertsPending = 0;
@@ -199,7 +317,7 @@ async function getKpis(userId, tenantId) {
     return {
         devices: {
             total: totalDevices,
-            online: totalDevices - offlineDevices,
+            online: onlineFromPrisma,
             offline: offlineDevices,
         },
         logs: {
