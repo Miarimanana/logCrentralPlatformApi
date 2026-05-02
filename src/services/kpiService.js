@@ -219,7 +219,7 @@ const { PrismaClient } = require('@prisma/client');
 const admin = require('./firebase');
 const prisma = new PrismaClient();
 
-let queryLoki, queryLokiCount, queryLokiSum;
+let queryLoki, queryLokiCount;
 try {
     const lokiService = require('./lokiService');
     queryLoki = lokiService.queryLoki;
@@ -235,12 +235,13 @@ try {
 // WARN  : PRIORITY = "4" ou "5"
 // ERROR : PRIORITY = "0", "1", "2", "3"
 
+// Devices distincts ayant envoyé des logs dans la dernière heure
 async function getActiveDevicesFromLoki(tenantName) {
     try {
         const count = await queryLokiCount(
             `count by (device_id) (count_over_time({tenant_id="${tenantName}"}[1h]))`
         );
-        console.log('[KPI] activeDevices (streams):', count);
+        console.log('[KPI] activeDevices Loki:', count);
         return count;
     } catch (e) {
         console.error('[KPI] Loki activeDevices erreur:', e.message);
@@ -257,23 +258,9 @@ async function getKpis(userId, tenantId) {
 
     console.log('[KPI] userId:', userId, '| tenantId:', tenantId, '| tenantName:', tenantName);
 
-    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
-
-    const [totalDevices, offlineDevices] = await Promise.all([
-        prisma.device.count({ where: { tenantId } }),
-        prisma.device.count({
-            where: {
-                tenantId,
-                OR: [
-                    { online: false },
-                    { lastSeenAt: { lt: fiveMinAgo } },
-                    { lastSeenAt: null },
-                ],
-            },
-        }),
-    ]);
-
-    console.log('[KPI] Devices — total:', totalDevices, '| offline:', offlineDevices);
+    // Total devices depuis Prisma
+    const totalDevices = await prisma.device.count({ where: { tenantId } });
+    console.log('[KPI] totalDevices:', totalDevices);
 
     let logsInfo = 0,
         logsWarn = 0,
@@ -294,12 +281,10 @@ async function getKpis(userId, tenantId) {
         console.error('[KPI] Loki erreur:', e.message);
     }
 
-    // on utilise le count Prisma comme fallback
-    const onlineFromPrisma = totalDevices - offlineDevices;
-    if (activeTokens === 0 && onlineFromPrisma > 0) {
-        console.log('[KPI] activeTokens Loki=0, fallback Prisma online:', onlineFromPrisma);
-        activeTokens = onlineFromPrisma;
-    }
+    const devicesOnline = Math.min(activeTokens, totalDevices);
+    const devicesOffline = Math.max(totalDevices - devicesOnline, 0);
+
+    console.log('[KPI] online:', devicesOnline, '| offline:', devicesOffline);
 
     let alertsPending = 0;
     try {
@@ -317,8 +302,8 @@ async function getKpis(userId, tenantId) {
     return {
         devices: {
             total: totalDevices,
-            online: onlineFromPrisma,
-            offline: offlineDevices,
+            online: devicesOnline,
+            offline: devicesOffline,
         },
         logs: {
             info_per_hour: Math.round(logsInfo),
