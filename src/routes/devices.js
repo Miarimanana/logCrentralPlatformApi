@@ -72,6 +72,20 @@ router.get('/:id', async(req, res) => {
     res.json(device);
 });
 
+router.patch('/:id', async(req, res) => {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'name requis' });
+    const device = await prisma.device.findFirst({
+        where: { id: req.params.id, tenantId: req.user.tenantId }
+    });
+    if (!device) return res.status(404).json({ error: 'Device non trouvé' });
+    const updated = await prisma.device.update({
+        where: { id: req.params.id },
+        data: { name }
+    });
+    res.json(updated);
+});
+
 // DELETE /api/devices/:id — supprimer (révoquer token)
 router.delete('/:id', async(req, res) => {
     const device = await prisma.device.findFirst({
